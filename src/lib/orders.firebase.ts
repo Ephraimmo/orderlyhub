@@ -13,6 +13,16 @@ export type OrderStatus =
   | "cancelled"
   | "refunded";
 
+/** Granular driver-side progress. Independent of `status` — written by the
+ * driver app directly, never by the restaurant admin app. */
+export type DriverStatus =
+  | "assigned"
+  | "arrived_at_restaurant"
+  | "picked_up"
+  | "on_the_way"
+  | "arrived_at_customer"
+  | "delivered";
+
 export type OrderType = "delivery" | "pickup";
 
 export interface DeliveryAddress {
@@ -77,6 +87,22 @@ export interface FirebaseOrder {
   restaurant_id: string;
   restaurant_name: string;
   customer_name: string;
+
+  driver_id?: string | null;
+  driver_name?: string | null;
+  driver_phone?: string | null;
+  driver_photo?: string | null;
+  driver_rating?: number | null;
+  driver_status?: DriverStatus | string | null;
+  assigned_at?: string | null;
+  arrived_at_restaurant?: string | null;
+  on_the_way_at?: string | null;
+  arrived_at_customer?: string | null;
+
+  rejection_reason?: string | null;
+  rejected_by?: string | null;
+  rejected_at?: string | null;
+
   updated_at?: string;
   [key: string]: unknown;
 }
@@ -112,6 +138,9 @@ function normalizeStatus(status: string | undefined | null): OrderStatus {
   return s as OrderStatus;
 }
 
+/** Canonicalize a raw/legacy status value. Use when loading order records into UI state. */
+export const canonicalOrderStatus = normalizeStatus;
+
 function assemble(
   ordersMap: Record<string, FirebaseOrder> | null,
   itemsMap: Record<string, Record<string, OrderLine>> | null,
@@ -146,6 +175,93 @@ export function isPickupOrder(o: { order_type?: string | null; type?: string | n
   return orderType(o) === "pickup";
 }
 
+/**
+ * Display stage computed from `status` + `driver_id` + `driver_status` together.
+ * `status` alone is ambiguous for delivery orders: "ready" means either "no driver
+ * yet" or "driver hasn't accepted"; "assigned" means either "heading to restaurant"
+ * or "already at the restaurant". Never switch on raw `status` for a delivery-order
+ * badge or action button — always go through this function.
+ */
+export type OrderStage =
+  | "pending"
+  | "accepted"
+  | "preparing"
+  | "ready"
+  | "unassigned"
+  | "waiting_accept"
+  | "heading_to_restaurant"
+  | "at_restaurant"
+  | "picked_up"
+  | "on_the_way"
+  | "at_customer"
+  | "delivered"
+  | "rejected"
+  | "cancelled"
+  | "refunded";
+
+export function orderStage(o: {
+  status: OrderStatus | string;
+  order_type?: OrderType | string | null;
+  driver_id?: string | null;
+  driver_status?: DriverStatus | string | null;
+}): OrderStage {
+  const raw = normalizeStatus(String(o.status)) as string;
+
+  if (orderType(o) === "pickup") {
+    // No driver is ever involved for pickup orders — the stage is the raw status.
+    return raw as OrderStage;
+  }
+
+  if (raw === "ready" || raw === "offered") {
+    return o.driver_id ? "waiting_accept" : "unassigned";
+  }
+  if (raw === "assigned" || raw === "arrived") {
+    return raw === "arrived" || o.driver_status === "arrived_at_restaurant"
+      ? "at_restaurant"
+      : "heading_to_restaurant";
+  }
+  if (raw === "on_the_way") {
+    return o.driver_status === "arrived_at_customer" ? "at_customer" : "on_the_way";
+  }
+  return raw as OrderStage; // pending, accepted, preparing, picked_up, delivered, rejected, cancelled, refunded
+}
+
+export const ORDER_STAGE_LABEL: Record<OrderStage, string> = {
+  pending: "Pending",
+  accepted: "Accepted",
+  preparing: "Preparing",
+  ready: "Ready for pickup",
+  unassigned: "Unassigned",
+  waiting_accept: "Waiting for driver to accept",
+  heading_to_restaurant: "Waiting for driver to get to the restaurant",
+  at_restaurant: "Driver at restaurant — picking up order",
+  picked_up: "Order picked up — driver en route",
+  on_the_way: "On the way to customer",
+  at_customer: "Driver at customer's door",
+  delivered: "Delivered",
+  rejected: "Rejected",
+  cancelled: "Cancelled",
+  refunded: "Refunded",
+};
+
+export const ORDER_STAGE_COLOR: Record<OrderStage, string> = {
+  pending: "bg-warning/10 text-warning",
+  accepted: "bg-primary/10 text-primary",
+  preparing: "bg-primary/10 text-primary",
+  ready: "bg-success/10 text-success",
+  unassigned: "bg-muted text-muted-foreground",
+  waiting_accept: "bg-warning/10 text-warning",
+  heading_to_restaurant: "bg-primary/10 text-primary",
+  at_restaurant: "bg-primary/10 text-primary",
+  picked_up: "bg-warning/10 text-warning",
+  on_the_way: "bg-warning/10 text-warning",
+  at_customer: "bg-warning/10 text-warning",
+  delivered: "bg-success/10 text-success",
+  rejected: "bg-destructive/10 text-destructive",
+  cancelled: "bg-destructive/10 text-destructive",
+  refunded: "bg-destructive/10 text-destructive",
+};
+
 /** Pickup at counter: ready → collected → completed (delivered). */
 export async function completePickupCollection(input: {
   orderId: string;
@@ -169,43 +285,6 @@ export async function completePickupCollection(input: {
     orderId: input.orderId,
     status: "delivered",
     note: "Order completed — customer collected",
-    actor: input.actor ?? null,
-  });
-}
-
-export async function assignOrderDriver(input: {
-  orderId: string;
-  driverId: string;
-  driverName: string;
-  driverPhone?: string | null;
-  actor?: string | null;
-}): Promise<void> {
-  const order = await fsGet<FirebaseOrder>(orderPath(input.orderId));
-  if (!order) throw new Error("Order not found");
-  if (!isDeliveryOrder(order)) {
-    throw new Error("Only delivery orders can be assigned to a driver");
-  }
-  if (!["accepted", "preparing", "ready", "assigned"].includes(String(order.status))) {
-    throw new Error(`Cannot assign a driver while order is ${order.status}`);
-  }
-  const ts = now();
-  const eta = order.eta_minutes ?? 30;
-  await fsSet(
-    orderPath(input.orderId),
-    w({
-      ...order,
-      driver_id: input.driverId,
-      driver_name: input.driverName,
-      driver_phone: input.driverPhone ?? null,
-      status: "assigned",
-      updated_at: ts,
-      eta_minutes: eta,
-      eta_at: new Date(Date.now() + eta * 60_000).toISOString(),
-    }),
-  );
-  await appendTimeline(input.orderId, {
-    status: "assigned",
-    note: `Driver assigned: ${input.driverName}`,
     actor: input.actor ?? null,
   });
 }
@@ -304,6 +383,10 @@ export async function setFirebaseOrderStatus(input: {
       break;
     case "picked_up":
       patch.picked_up_at = ts;
+      // Mirrors the driver app's own PIN-verified pickup write — this status is
+      // only ever set on a delivery order via the "Mark picked up" fallback at
+      // stage "at_restaurant" (see setFirebaseOrderStatus callers / docs).
+      if (isDeliveryOrder(order)) patch.driver_status = "picked_up";
       break;
     case "delivered":
       patch.delivered_at = ts;
@@ -326,6 +409,44 @@ export async function setFirebaseOrderStatus(input: {
   await appendTimeline(input.orderId, {
     status: input.status,
     note: input.note ?? null,
+    actor: input.actor ?? null,
+  });
+}
+
+/** Reject a pending order. A reason is mandatory — it is shown to the customer. */
+export async function rejectFirebaseOrder(input: {
+  orderId: string;
+  reason: string;
+  actor?: string | null;
+}): Promise<void> {
+  if (!isFirebaseAvailable()) throw new Error("Firebase unavailable");
+  const reason = input.reason.trim();
+  if (!reason) throw new Error("A rejection reason is required");
+
+  const order = await fsGet<FirebaseOrder>(orderPath(input.orderId));
+  if (!order) throw new Error("Order not found");
+  if (normalizeStatus(String(order.status)) !== "pending") {
+    throw new Error("Only pending orders can be rejected");
+  }
+
+  const ts = now();
+  const patch: Partial<FirebaseOrder> = {
+    status: "rejected",
+    rejected_at: ts,
+    rejection_reason: reason,
+    rejected_by: input.actor ?? null,
+    cancelled_at: ts,
+    updated_at: ts,
+    driver_id: null,
+    driver_name: null,
+    driver_phone: null,
+    driver_status: null,
+  };
+
+  await fsSet(orderPath(input.orderId), w({ ...order, ...patch }));
+  await appendTimeline(input.orderId, {
+    status: "rejected",
+    note: reason,
     actor: input.actor ?? null,
   });
 }

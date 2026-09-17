@@ -1,9 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { db } from "@/lib/firestore";
-import { ref, onValue, update } from "@/lib/firestore";
+import { ref, onValue } from "@/lib/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 import { belongsToRestaurant } from "@/lib/restaurant-scope";
-import { setFirebaseOrderStatus, orderType, isDeliveryOrder, isPickupOrder, completePickupCollection, assignOrderDriver } from "@/lib/orders.firebase";
+import {
+  setFirebaseOrderStatus,
+  rejectFirebaseOrder,
+  orderType,
+  orderStage,
+  canonicalOrderStatus,
+  isDeliveryOrder,
+  isPickupOrder,
+  completePickupCollection,
+  ORDER_STAGE_LABEL,
+  ORDER_STAGE_COLOR,
+} from "@/lib/orders.firebase";
 import {
   formatDeliveryAddress,
   normalizeOrderItems,
@@ -33,41 +44,25 @@ import { OrderTypeBadge } from "@/components/OrderTypeBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { Eye, Search, Filter, MapPin, CreditCard, Banknote, Receipt, Truck, Clock, User, Phone, FileText, UtensilsCrossed, ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
 import TableSkeleton from "@/components/TableSkeleton";
 
 const ORDER_STATUSES = [
   "pending", "accepted", "preparing", "ready",
-  "assigned", "picked_up", "on_the_way", "delivered", "cancelled",
-  "awaiting_approval", "approved", "out_for_delivery", "completed",
+  "assigned", "picked_up", "on_the_way", "delivered", "rejected", "cancelled", "refunded",
 ];
-
-const statusColors: Record<string, string> = {
-  pending: "bg-warning/10 text-warning",
-  awaiting_approval: "bg-warning/10 text-warning",
-  accepted: "bg-primary/10 text-primary",
-  approved: "bg-primary/10 text-primary",
-  preparing: "bg-primary/10 text-primary",
-  ready: "bg-success/10 text-success",
-  assigned: "bg-primary/10 text-primary",
-  picked_up: "bg-warning/10 text-warning",
-  on_the_way: "bg-warning/10 text-warning",
-  out_for_delivery: "bg-warning/10 text-warning",
-  delivered: "bg-success/10 text-success",
-  completed: "bg-success/10 text-success",
-  cancelled: "bg-destructive/10 text-destructive",
-};
 
 const Orders = () => {
   const { restaurantId, canManage, session } = useAuth();
   const readOnly = !canManage("orders");
+  const canKitchenManage = canManage("kitchen");
   const [orders, setOrders] = useState<any[]>([]);
-  const [drivers, setDrivers] = useState<any[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -95,53 +90,19 @@ const Orders = () => {
 
   useEffect(() => {
     if (!restaurantId) return;
-    let assignments: Record<string, any> = {};
-    let driverProfiles: Record<string, any> = {};
-    let loaded = { o: false, d: false };
-    const checkDone = () => { if (loaded.o && loaded.d) setLoading(false); };
-
-    const mergeDrivers = () => {
-      const list = Object.values(assignments)
-        .filter((a) => a.restaurant_id === restaurantId && a.is_active !== false)
-        .map((a) => {
-          const profile = driverProfiles[a.driver_id] ?? {};
-          const name =
-            profile.full_name ??
-            profile.name ??
-            a.driver_name ??
-            a.driver_id ??
-            "Driver";
-          return {
-            id: a.driver_id,
-            name: String(name).trim() || a.driver_id,
-            phone: profile.phone ?? a.driver_phone ?? "",
-          };
-        });
-      setDrivers(list);
-      loaded.d = true;
-      checkDone();
-    };
-
-    const unsub1 = onValue(ref(db, "orders"), (snap) => {
-      if (!snap.exists()) { setOrders([]); }
-      else {
+    const unsub = onValue(ref(db, "orders"), (snap) => {
+      if (!snap.exists()) {
+        setOrders([]);
+      } else {
         setOrders(
           Object.entries(snap.val())
-            .map(([id, val]: any) => ({ id, ...val }))
+            .map(([id, val]: any) => ({ id, ...val, status: canonicalOrderStatus(val.status) }))
             .filter((o) => belongsToRestaurant(o, restaurantId)),
         );
       }
-      loaded.o = true; checkDone();
+      setLoading(false);
     });
-    const unsub2 = onValue(ref(db, "driverAssignments"), (snap) => {
-      assignments = snap.exists() ? snap.val() : {};
-      mergeDrivers();
-    });
-    const unsub3 = onValue(ref(db, "drivers"), (snap) => {
-      driverProfiles = snap.exists() ? snap.val() : {};
-      mergeDrivers();
-    });
-    return () => { unsub1(); unsub2(); unsub3(); };
+    return unsub;
   }, [restaurantId]);
 
   useEffect(() => {
@@ -182,50 +143,89 @@ const Orders = () => {
     return () => unsub();
   }, [selectedOrder?.id, selectedOrder?.items, menuCatalog]);
 
+  const [rejectOrderId, setRejectOrderId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [rejecting, setRejecting] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
   const acceptOrder = async (orderId: string) => {
     if (readOnly) return;
-    await setFirebaseOrderStatus({
-      orderId,
-      status: "accepted",
-      actor: session?.email ?? null,
-    });
-    toast.success("Order accepted — now visible in Kitchen");
-  };
-
-  const updateStatus = async (orderId: string, status: string) => {
-    if (readOnly) return;
-    await update(ref(db, `orders/${orderId}`), { status, updatedAt: Date.now() });
-    toast.success(`Order ${status.replace(/_/g, " ")}`);
-  };
-
-  const assignDriver = async (orderId: string, driverId: string) => {
-    if (readOnly) return;
-    const order = orders.find((o) => o.id === orderId);
-    if (order && !isDeliveryOrder(order)) {
-      toast.error("Only delivery orders can be assigned to a driver");
-      return;
-    }
-    const driver = drivers.find((d) => d.id === driverId);
-    if (!driver) {
-      toast.error("Driver not found");
-      return;
-    }
+    setBusyId(orderId);
     try {
-      await assignOrderDriver({
+      await setFirebaseOrderStatus({
         orderId,
-        driverId,
-        driverName: driver.name,
-        driverPhone: driver.phone,
+        status: "accepted",
         actor: session?.email ?? null,
       });
-      toast.success(`Driver assigned: ${driver.name}`);
+      toast.success("Order accepted — now visible in Kitchen");
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to assign driver");
+      toast.error(err instanceof Error ? err.message : "Failed to accept order");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const openReject = (orderId: string) => {
+    if (readOnly) return;
+    setRejectOrderId(orderId);
+    setRejectReason("");
+  };
+
+  const submitReject = async () => {
+    if (!rejectOrderId || !rejectReason.trim()) return;
+    setRejecting(true);
+    try {
+      await rejectFirebaseOrder({
+        orderId: rejectOrderId,
+        reason: rejectReason.trim(),
+        actor: session?.email ?? null,
+      });
+      toast.success("Order rejected");
+      setRejectOrderId(null);
+      setRejectReason("");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to reject order");
+    } finally {
+      setRejecting(false);
+    }
+  };
+
+  const advanceKitchen = async (orderId: string, nextStatus: "preparing" | "ready", currentEtaMinutes: number | null) => {
+    if (!canKitchenManage) return;
+    setBusyId(orderId);
+    try {
+      await setFirebaseOrderStatus({
+        orderId,
+        status: nextStatus,
+        etaMinutes: nextStatus === "ready" ? Math.max(5, currentEtaMinutes ?? 15) : null,
+        actor: session?.email ?? null,
+      });
+      toast.success(`Order marked ${nextStatus.replace(/_/g, " ")}`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to advance order");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /** Fallback for when the order is stuck waiting on the driver app's own PIN-verified
+   * pickup write — only ever valid at stage "at_restaurant" (see handover doc §5.4). */
+  const markPickedUpFallback = async (orderId: string) => {
+    if (readOnly) return;
+    setBusyId(orderId);
+    try {
+      await setFirebaseOrderStatus({ orderId, status: "picked_up", actor: session?.email ?? null });
+      toast.success("Order marked picked up");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to mark order picked up");
+    } finally {
+      setBusyId(null);
     }
   };
 
   const collectPickupOrder = async (orderId: string) => {
     if (readOnly) return;
+    setBusyId(orderId);
     try {
       await completePickupCollection({
         orderId,
@@ -234,6 +234,8 @@ const Orders = () => {
       toast.success("Customer collected — order completed");
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Failed to complete pickup");
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -294,7 +296,6 @@ const Orders = () => {
             <SelectItem value="all">All Types</SelectItem>
             <SelectItem value="delivery">Delivery</SelectItem>
             <SelectItem value="pickup">Pickup</SelectItem>
-            <SelectItem value="table">Table</SelectItem>
           </SelectContent>
         </Select>
         <Select value={paymentFilter} onValueChange={setPaymentFilter}>
@@ -325,7 +326,10 @@ const Orders = () => {
           <TableBody>
             {filtered.length === 0 ? (
               <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No orders found</TableCell></TableRow>
-            ) : filtered.map((o) => (
+            ) : filtered.map((o) => {
+              const stage = orderStage(o);
+              const busy = busyId === o.id;
+              return (
               <TableRow key={o.id}>
                 <TableCell className="font-mono font-medium">{orderNumber(o)}</TableCell>
                 <TableCell>
@@ -338,8 +342,8 @@ const Orders = () => {
                 <TableCell className="font-medium">R{orderLineTotal(o).toFixed(2)}</TableCell>
                 <TableCell className="capitalize">{orderPaymentMethod(o)}</TableCell>
                 <TableCell>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium capitalize ${statusColors[o.status] || "bg-muted text-muted-foreground"}`}>
-                    {(o.status || "pending").replace(/_/g, " ")}
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${ORDER_STAGE_COLOR[stage] || "bg-muted text-muted-foreground"}`}>
+                    {ORDER_STAGE_LABEL[stage] || stage}
                   </span>
                 </TableCell>
                 <TableCell className="text-right">
@@ -347,49 +351,39 @@ const Orders = () => {
                     <Button variant="ghost" size="sm" onClick={() => setSelectedOrder(o)}>
                       <Eye className="h-3 w-3 mr-1" />View
                     </Button>
-                    {(o.status === "pending" || o.status === "awaiting_approval") && (
+                    {stage === "pending" && !readOnly && (
                       <>
-                        <Button size="sm" variant="default" onClick={() => acceptOrder(o.id)}>Accept</Button>
-                        <Button size="sm" variant="outline" className="text-destructive" onClick={() => updateStatus(o.id, "cancelled")}>Reject</Button>
+                        <Button size="sm" variant="default" disabled={busy} onClick={() => acceptOrder(o.id)}>Accept</Button>
+                        <Button size="sm" variant="outline" className="text-destructive" disabled={busy} onClick={() => openReject(o.id)}>Reject</Button>
                       </>
                     )}
-                    {o.status === "approved" && <Button size="sm" onClick={() => updateStatus(o.id, "preparing")}>Prepare</Button>}
-                    {o.status === "preparing" && <Button size="sm" onClick={() => updateStatus(o.id, "ready")}>Ready</Button>}
-                    {o.status === "ready" && isDeliveryOrder(o) && !readOnly && (
-                      drivers.length > 0 ? (
-                        <Select onValueChange={(v) => assignDriver(o.id, v)}>
-                          <SelectTrigger className="w-36 h-8 text-xs">
-                            <SelectValue placeholder="Assign driver" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {drivers.map((d) => (
-                              <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      ) : (
-                        <span className="text-[10px] text-muted-foreground px-2">No drivers</span>
-                      )
+                    {stage === "accepted" && canKitchenManage && (
+                      <Button size="sm" disabled={busy} onClick={() => advanceKitchen(o.id, "preparing", o.eta_minutes ?? null)}>Prepare</Button>
                     )}
-                    {o.status === "ready" && isPickupOrder(o) && !readOnly && (
-                      <Button size="sm" variant="default" onClick={() => collectPickupOrder(o.id)}>
+                    {stage === "preparing" && canKitchenManage && (
+                      <Button size="sm" disabled={busy} onClick={() => advanceKitchen(o.id, "ready", o.eta_minutes ?? null)}>Ready</Button>
+                    )}
+                    {stage === "ready" && isPickupOrder(o) && !readOnly && (
+                      <Button size="sm" variant="default" disabled={busy} onClick={() => collectPickupOrder(o.id)}>
                         <ShoppingBag className="h-3 w-3 mr-1" />
                         Customer collected
                       </Button>
                     )}
-                    {o.status === "assigned" && isDeliveryOrder(o) && !readOnly && (
-                      <Button size="sm" onClick={() => updateStatus(o.id, "on_the_way")}>Dispatch</Button>
+                    {(stage === "unassigned" || stage === "waiting_accept" || stage === "heading_to_restaurant") && (
+                      <span className="text-[10px] text-muted-foreground px-2">
+                        {ORDER_STAGE_LABEL[stage]}
+                      </span>
                     )}
-                    {o.status === "on_the_way" && isDeliveryOrder(o) && !readOnly && (
-                      <Button size="sm" onClick={() => updateStatus(o.id, "delivered")}>Complete</Button>
-                    )}
-                    {(o.status === "out_for_delivery") && isDeliveryOrder(o) && !readOnly && (
-                      <Button size="sm" onClick={() => updateStatus(o.id, "delivered")}>Complete</Button>
+                    {stage === "at_restaurant" && !readOnly && (
+                      <Button size="sm" variant="secondary" disabled={busy} onClick={() => markPickedUpFallback(o.id)}>
+                        Mark picked up
+                      </Button>
                     )}
                   </div>
                 </TableCell>
               </TableRow>
-            ))}
+              );
+            })}
           </TableBody>
         </Table>
       </div>
@@ -403,8 +397,8 @@ const Orders = () => {
               <span>{selectedOrder ? orderNumber(selectedOrder) : "Order"}</span>
               {selectedOrder && (
                 <>
-                  <Badge variant="outline" className={`capitalize ${statusColors[selectedOrder.status] || "bg-muted text-muted-foreground"}`}>
-                    {(selectedOrder.status || "pending").replace(/_/g, " ")}
+                  <Badge variant="outline" className={ORDER_STAGE_COLOR[orderStage(selectedOrder)] || "bg-muted text-muted-foreground"}>
+                    {ORDER_STAGE_LABEL[orderStage(selectedOrder)] || selectedOrder.status}
                   </Badge>
                   <OrderTypeBadge type={orderType(selectedOrder)} />
                 </>
@@ -475,6 +469,12 @@ const Orders = () => {
                   <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 p-4">
                     <p className="text-xs font-medium text-amber-700 dark:text-amber-300 mb-1">Special instructions</p>
                     <p className="text-sm leading-relaxed">{selectedInstructions}</p>
+                  </div>
+                )}
+                {selectedOrder.status === "rejected" && selectedOrder.rejection_reason && (
+                  <div className="rounded-xl border border-destructive/25 bg-destructive/10 p-4">
+                    <p className="text-xs font-medium text-destructive mb-1">Rejection reason</p>
+                    <p className="text-sm leading-relaxed">{selectedOrder.rejection_reason}</p>
                   </div>
                 )}
               </TabsContent>
@@ -657,11 +657,17 @@ const Orders = () => {
                     {orderDriverPhone(selectedOrder) && (
                       <p className="text-xs text-muted-foreground ml-6 mt-1">{orderDriverPhone(selectedOrder)}</p>
                     )}
+                    <p className="text-xs text-muted-foreground ml-6 mt-1">
+                      {ORDER_STAGE_LABEL[orderStage(selectedOrder)]}
+                    </p>
                   </div>
                 ) : (
                   isDeliveryOrder(selectedOrder) && (
                     <div className="rounded-xl border border-warning/20 bg-warning/5 p-4 text-center">
                       <p className="text-xs text-warning font-medium">No driver assigned yet</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Driver dispatch is managed by ForkFleet — not from this screen.
+                      </p>
                     </div>
                   )
                 )}
@@ -677,6 +683,36 @@ const Orders = () => {
               </TabsContent>
             </Tabs>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Reject Order Dialog */}
+      <Dialog open={!!rejectOrderId} onOpenChange={(v) => !v && setRejectOrderId(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reject order</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            The customer will see this reason. Rejection cannot be undone.
+          </p>
+          <Textarea
+            placeholder="e.g. Out of stock, kitchen closed early..."
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            rows={3}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectOrderId(null)} disabled={rejecting}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={submitReject}
+              disabled={rejecting || !rejectReason.trim()}
+            >
+              Reject order
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
