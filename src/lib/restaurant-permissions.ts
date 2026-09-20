@@ -35,6 +35,11 @@ export const RESTAURANT_PERMISSIONS: RestaurantPermission[] = [
   { code: "rm.menu.manage", module: "menu", description: "Create and edit menu categories and products" },
   { code: "rm.orders.view", module: "orders", description: "View incoming and historical orders" },
   { code: "rm.orders.manage", module: "orders", description: "Accept, advance and cancel orders" },
+  {
+    code: "rm.orders.assign",
+    module: "orders",
+    description: "Assign or reassign a driver on a ready order",
+  },
   { code: "rm.kitchen.view", module: "kitchen", description: "View the kitchen preparation queue" },
   { code: "rm.kitchen.manage", module: "kitchen", description: "Mark items prepared and manage kitchen flow" },
   { code: "rm.tables.view", module: "tables", description: "View table layout and seating status" },
@@ -83,13 +88,13 @@ const entries: RestaurantRolePermission[] = [];
 grant("restaurant_owner", RESTAURANT_PERMISSION_CODES);
 grant("restaurant_manager", [
   "rm.dashboard.view", "rm.profile.view", "rm.profile.manage", "rm.menu.view", "rm.menu.manage",
-  "rm.orders.view", "rm.orders.manage", "rm.kitchen.view", "rm.kitchen.manage", "rm.tables.view",
+  "rm.orders.view", "rm.orders.manage", "rm.orders.assign", "rm.kitchen.view", "rm.kitchen.manage", "rm.tables.view",
   "rm.tables.manage", "rm.customers.view", "rm.customers.manage", "rm.inventory.view", "rm.inventory.manage",
   "rm.delivery.view", "rm.delivery.manage", "rm.drivers.view", "rm.promotions.view", "rm.reports.view", "rm.settings.view",
   "rm.support.view", "rm.support.manage",
 ]);
 grant("branch_manager", [
-  "rm.dashboard.view", "rm.profile.view", "rm.orders.view", "rm.orders.manage", "rm.kitchen.view",
+  "rm.dashboard.view", "rm.profile.view", "rm.orders.view", "rm.orders.manage", "rm.orders.assign", "rm.kitchen.view",
   "rm.kitchen.manage", "rm.tables.view", "rm.tables.manage", "rm.customers.view", "rm.inventory.view", "rm.reports.view",
   "rm.support.view",
 ]);

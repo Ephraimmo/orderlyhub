@@ -13,6 +13,7 @@ import {
   isRestaurantRole,
   type RestaurantRole,
 } from "@/lib/restaurant-permissions";
+import { fetchCustomRole, isCustomRoleId } from "@/lib/custom-roles.firebase";
 import type { RestaurantUserSession } from "@/lib/restaurant-users.firebase";
 
 export const STAFF_ROLES: RestaurantRole[] = [
@@ -24,8 +25,9 @@ export const STAFF_ROLES: RestaurantRole[] = [
   "inventory_manager",
 ];
 
-/** Permissions a username account may never hold — system configuration is admin-only. */
-const STAFF_DENIED_PERMISSIONS = [
+/** Permissions a username account may never hold — system configuration is admin-only.
+ * Applies equally to built-in roles and restaurant-defined custom roles. */
+export const STAFF_DENIED_PERMISSIONS = [
   "rm.settings.view",
   "rm.settings.manage",
   "rm.profile.manage",
@@ -36,13 +38,25 @@ export function staffPermissionsForRole(role: RestaurantRole): string[] {
   return getDefaultPermissionsForRole(role).filter((code) => !STAFF_DENIED_PERMISSIONS.includes(code));
 }
 
+/** Resolves a staff member's actual granted permissions — built-in role or custom
+ * role, looked up fresh so an edited custom role takes effect on next sign-in. */
+export async function resolveStaffPermissions(restaurantId: string, role: string): Promise<string[]> {
+  if (isRestaurantRole(role)) return staffPermissionsForRole(role);
+  if (isCustomRoleId(role)) {
+    const custom = await fetchCustomRole(restaurantId, role);
+    return (custom?.permissions ?? []).filter((code) => !STAFF_DENIED_PERMISSIONS.includes(code));
+  }
+  return [];
+}
+
 export interface StaffUser {
   id: string;
   restaurant_id: string;
   username: string;
   full_name: string;
   phone?: string | null;
-  role: RestaurantRole;
+  /** A built-in RestaurantRole, or a "custom_"-prefixed CustomRole id (see custom-roles.firebase.ts). */
+  role: string;
   branch_id: string | null;
   branch_name: string | null;
   is_active: boolean;
@@ -89,7 +103,10 @@ const toList = (map: Record<string, unknown> | null, restaurantId: string): Staf
         restaurant_id: staff.restaurant_id ?? restaurantId,
         username: staff.username ?? key,
         full_name: staff.full_name ?? key,
-        role: isRestaurantRole(String(staff.role)) ? (staff.role as RestaurantRole) : "cashier",
+        role:
+          isRestaurantRole(String(staff.role)) || isCustomRoleId(String(staff.role))
+            ? String(staff.role)
+            : "cashier",
         branch_id: staff.branch_id ?? null,
         branch_name: staff.branch_name ?? null,
         is_active: staff.is_active !== false,
@@ -115,7 +132,7 @@ export interface StaffUserInput {
   username: string;
   full_name: string;
   phone?: string | null;
-  role: RestaurantRole;
+  role: string;
   branch_id: string | null;
   branch_name: string | null;
   is_active: boolean;
@@ -212,6 +229,16 @@ export async function signInStaffUser(input: {
     [username]: { ...record, last_login_at: nowIso() },
   }).catch(() => {});
 
+  let permissions: string[] = [];
+  let roleName: string | null = null;
+  if (isRestaurantRole(record.role)) {
+    permissions = staffPermissionsForRole(record.role);
+  } else if (isCustomRoleId(record.role)) {
+    const custom = await fetchCustomRole(restaurantId, record.role);
+    permissions = (custom?.permissions ?? []).filter((code) => !STAFF_DENIED_PERMISSIONS.includes(code));
+    roleName = custom?.name ?? null;
+  }
+
   const session: RestaurantUserSession = {
     userId: `staff:${restaurantId}:${username}`,
     email: `${username}@staff.local`,
@@ -220,7 +247,8 @@ export async function signInStaffUser(input: {
     phone: record.phone ?? null,
     restaurantId,
     role: record.role,
-    permissions: staffPermissionsForRole(record.role),
+    roleName,
+    permissions,
     kind: "staff",
     username,
     branchId: record.branch_id ?? null,

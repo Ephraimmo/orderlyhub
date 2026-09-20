@@ -6,6 +6,8 @@ import { belongsToRestaurant } from "@/lib/restaurant-scope";
 import {
   setFirebaseOrderStatus,
   rejectFirebaseOrder,
+  assignOrderDriver,
+  isAssignableToDriver,
   orderType,
   orderStage,
   canonicalOrderStatus,
@@ -15,6 +17,12 @@ import {
   ORDER_STAGE_LABEL,
   ORDER_STAGE_COLOR,
 } from "@/lib/orders.firebase";
+import {
+  eligibleDriversForOrder,
+  type DriverAssignmentRecord,
+  type DriverProfileRecord,
+  type EligibleDriver,
+} from "@/lib/drivers.firebase";
 import {
   formatDeliveryAddress,
   normalizeOrderItems,
@@ -59,10 +67,14 @@ const ORDER_STATUSES = [
 ];
 
 const Orders = () => {
-  const { restaurantId, canManage, session } = useAuth();
+  const { restaurantId, canManage, can, session } = useAuth();
   const readOnly = !canManage("orders");
   const canKitchenManage = canManage("kitchen");
+  // Independent of rm.orders.manage — a restaurant may grant one without the other.
+  const canAssignDriver = can("rm.orders.assign");
   const [orders, setOrders] = useState<any[]>([]);
+  const [driverAssignments, setDriverAssignments] = useState<Record<string, DriverAssignmentRecord>>({});
+  const [driverProfiles, setDriverProfiles] = useState<Record<string, DriverProfileRecord>>({});
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -104,6 +116,21 @@ const Orders = () => {
     });
     return unsub;
   }, [restaurantId]);
+
+  useEffect(() => {
+    if (!restaurantId || !canAssignDriver) {
+      setDriverAssignments({});
+      setDriverProfiles({});
+      return;
+    }
+    const unsub1 = onValue(ref(db, "driverAssignments"), (snap) => {
+      setDriverAssignments(snap.exists() ? snap.val() : {});
+    });
+    const unsub2 = onValue(ref(db, "drivers"), (snap) => {
+      setDriverProfiles(snap.exists() ? snap.val() : {});
+    });
+    return () => { unsub1(); unsub2(); };
+  }, [restaurantId, canAssignDriver]);
 
   useEffect(() => {
     if (!restaurantId) return;
@@ -208,6 +235,32 @@ const Orders = () => {
     }
   };
 
+  const assignDriver = async (orderId: string, driverId: string, eligibleDrivers: EligibleDriver[]) => {
+    if (!canAssignDriver) return;
+    const driver = eligibleDrivers.find((d) => d.id === driverId);
+    if (!driver) {
+      toast.error("Driver not found or no longer eligible for this restaurant/branch");
+      return;
+    }
+    setBusyId(orderId);
+    try {
+      await assignOrderDriver({
+        orderId,
+        driverId: driver.id,
+        driverName: driver.name,
+        driverPhone: driver.phone || null,
+        driverPhoto: driver.photo,
+        driverRating: driver.rating,
+        actor: session?.email ?? null,
+      });
+      toast.success(`Driver assigned: ${driver.name}`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to assign driver");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   /** Fallback for when the order is stuck waiting on the driver app's own PIN-verified
    * pickup write — only ever valid at stage "at_restaurant" (see handover doc §5.4). */
   const markPickedUpFallback = async (orderId: string) => {
@@ -265,6 +318,10 @@ const Orders = () => {
   const selectedInstructions = selectedOrder ? orderSpecialInstructions(selectedOrder) : "";
   const selectedPlacedAt = selectedOrder ? orderPlacedAt(selectedOrder) : null;
   const selectedEta = selectedOrder ? orderEtaAt(selectedOrder) : null;
+  const selectedEligibleDrivers =
+    selectedOrder && canAssignDriver && isAssignableToDriver(selectedOrder)
+      ? eligibleDriversForOrder(driverAssignments, driverProfiles, restaurantId ?? "", selectedOrder.branch_id ?? null)
+      : [];
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -329,6 +386,10 @@ const Orders = () => {
             ) : filtered.map((o) => {
               const stage = orderStage(o);
               const busy = busyId === o.id;
+              const eligibleDrivers =
+                canAssignDriver && (stage === "unassigned" || stage === "waiting_accept")
+                  ? eligibleDriversForOrder(driverAssignments, driverProfiles, restaurantId ?? "", o.branch_id ?? null)
+                  : [];
               return (
               <TableRow key={o.id}>
                 <TableCell className="font-mono font-medium">{orderNumber(o)}</TableCell>
@@ -369,7 +430,28 @@ const Orders = () => {
                         Customer collected
                       </Button>
                     )}
-                    {(stage === "unassigned" || stage === "waiting_accept" || stage === "heading_to_restaurant") && (
+                    {(stage === "unassigned" || stage === "waiting_accept") && canAssignDriver && (
+                      eligibleDrivers.length > 0 ? (
+                        <Select disabled={busy} onValueChange={(v) => assignDriver(o.id, v, eligibleDrivers)}>
+                          <SelectTrigger className="w-36 h-8 text-xs">
+                            <SelectValue placeholder={stage === "waiting_accept" ? "Reassign driver" : "Assign driver"} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {eligibleDrivers.map((d) => (
+                              <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground px-2">No eligible drivers for this branch</span>
+                      )
+                    )}
+                    {(stage === "unassigned" || stage === "waiting_accept") && !canAssignDriver && (
+                      <span className="text-[10px] text-muted-foreground px-2">
+                        {ORDER_STAGE_LABEL[stage]}
+                      </span>
+                    )}
+                    {stage === "heading_to_restaurant" && (
                       <span className="text-[10px] text-muted-foreground px-2">
                         {ORDER_STAGE_LABEL[stage]}
                       </span>
@@ -665,11 +747,32 @@ const Orders = () => {
                   isDeliveryOrder(selectedOrder) && (
                     <div className="rounded-xl border border-warning/20 bg-warning/5 p-4 text-center">
                       <p className="text-xs text-warning font-medium">No driver assigned yet</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Driver dispatch is managed by ForkFleet — not from this screen.
-                      </p>
                     </div>
                   )
+                )}
+                {canAssignDriver && isAssignableToDriver(selectedOrder) && (
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    <p className="text-xs text-muted-foreground mb-2">
+                      {orderDriverName(selectedOrder) ? "Reassign driver" : "Assign a driver"}
+                    </p>
+                    {selectedEligibleDrivers.length > 0 ? (
+                      <Select
+                        disabled={busyId === selectedOrder.id}
+                        onValueChange={(v) => assignDriver(selectedOrder.id, v, selectedEligibleDrivers)}
+                      >
+                        <SelectTrigger className="w-full h-9 text-xs">
+                          <SelectValue placeholder="Choose a driver" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {selectedEligibleDrivers.map((d) => (
+                            <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No eligible drivers for this restaurant/branch yet</p>
+                    )}
+                  </div>
                 )}
                 {selectedEta && (
                   <div className="rounded-xl border border-border bg-card p-4">

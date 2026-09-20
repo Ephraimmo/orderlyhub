@@ -47,6 +47,7 @@ const COLLECTIONS: string[] = [
   "restaurants",
   "restaurantBranches",
   "restaurantStaff",
+  "restaurantCustomRoles",
   "staffDirectory",
   "menus/*/categories",
   "menus/*/items",

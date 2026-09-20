@@ -45,7 +45,12 @@ export interface RestaurantUserSession {
   jobTitle: string | null;
   phone: string | null;
   restaurantId: string;
-  role: RestaurantRole;
+  /** A built-in RestaurantRole for admin accounts; staff accounts may also carry a
+   * "custom_"-prefixed CustomRole id (see custom-roles.firebase.ts) — use `roleName`
+   * for display in that case, since it won't resolve through RESTAURANT_ROLE_LABELS. */
+  role: RestaurantRole | string;
+  /** Display name for a custom role. Unset (falls back to restaurantRoleLabel) for built-in roles. */
+  roleName?: string | null;
   permissions: string[];
   /** "admin" = Firebase email/password account, "staff" = username account created in-app. */
   kind?: "admin" | "staff";

@@ -211,7 +211,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         can,
         canManage,
         restaurantId: session?.restaurantId ?? null,
-        roleLabel: session ? restaurantRoleLabel(session.role as RestaurantRole) : "",
+        roleLabel: session ? session.roleName ?? restaurantRoleLabel(session.role as RestaurantRole) : "",
         user: legacyUser,
         isManager: !can("rm.menu.manage") && !can("rm.orders.manage") && !can("rm.settings.manage"),
         isAdmin: session?.role === "restaurant_owner",

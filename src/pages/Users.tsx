@@ -3,6 +3,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { subscribeBranches, type RestaurantBranch } from "@/lib/branches.firebase";
 import {
   STAFF_ROLES,
+  STAFF_DENIED_PERMISSIONS,
   deleteStaffUser,
   normalizeUsername,
   saveStaffUser,
@@ -10,11 +11,19 @@ import {
   subscribeStaffUsers,
   type StaffUser,
 } from "@/lib/staff-users.firebase";
-import { restaurantRoleLabel } from "@/lib/restaurant-permissions";
+import {
+  isCustomRoleId,
+  subscribeCustomRoles,
+  saveCustomRole,
+  deleteCustomRole,
+  type CustomRole,
+} from "@/lib/custom-roles.firebase";
+import { restaurantRoleLabel, isRestaurantRole, RESTAURANT_PERMISSIONS } from "@/lib/restaurant-permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -27,7 +36,10 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -36,6 +48,7 @@ import {
   Loader2,
   Plus,
   ShieldCheck,
+  ShieldPlus,
   Trash2,
   Pencil,
   Users as UsersIcon,
@@ -63,6 +76,21 @@ const emptyForm: FormState = {
   password: "",
 };
 
+/** Permissions a custom role may grant — same restriction as built-in staff roles
+ * (settings/profile/payment configuration stays admin-only, see staff-users.firebase.ts). */
+const ASSIGNABLE_PERMISSIONS = RESTAURANT_PERMISSIONS.filter(
+  (p) => !STAFF_DENIED_PERMISSIONS.includes(p.code),
+);
+const PERMISSION_MODULES = [...new Set(ASSIGNABLE_PERMISSIONS.map((p) => p.module))];
+const CREATE_CUSTOM_ROLE_VALUE = "__create_custom_role__";
+
+interface RoleFormState {
+  name: string;
+  permissions: string[];
+}
+
+const emptyRoleForm: RoleFormState = { name: "", permissions: [] };
+
 const Users = () => {
   const { restaurantId, can } = useAuth();
   const { toast } = useToast();
@@ -70,12 +98,19 @@ const Users = () => {
 
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [branches, setBranches] = useState<RestaurantBranch[]>([]);
+  const [customRoles, setCustomRoles] = useState<CustomRole[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<StaffUser | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  const [roleDialogOpen, setRoleDialogOpen] = useState(false);
+  const [editingRole, setEditingRole] = useState<CustomRole | null>(null);
+  const [roleForm, setRoleForm] = useState<RoleFormState>(emptyRoleForm);
+  const [savingRole, setSavingRole] = useState(false);
+  const [roleError, setRoleError] = useState("");
 
   useEffect(() => {
     if (!restaurantId) return;
@@ -84,11 +119,24 @@ const Users = () => {
       setLoading(false);
     });
     const unsubBranches = subscribeBranches(restaurantId, setBranches);
+    const unsubRoles = subscribeCustomRoles(restaurantId, setCustomRoles);
     return () => {
       unsubStaff();
       unsubBranches();
+      unsubRoles();
     };
   }, [restaurantId]);
+
+  const roleLabelFor = (role: string): string => {
+    if (isRestaurantRole(role)) return restaurantRoleLabel(role);
+    return customRoles.find((r) => r.id === role)?.name ?? "Custom role (deleted)";
+  };
+
+  const previewPermissionsFor = (role: string): string[] => {
+    if (isRestaurantRole(role)) return staffPermissionsForRole(role);
+    const custom = customRoles.find((r) => r.id === role);
+    return (custom?.permissions ?? []).filter((code) => !STAFF_DENIED_PERMISSIONS.includes(code));
+  };
 
   const branchOptions = useMemo(
     () => [
@@ -141,7 +189,7 @@ const Users = () => {
           username,
           full_name: form.full_name,
           phone: form.phone,
-          role: form.role as StaffUser["role"],
+          role: form.role,
           branch_id: form.branch_id === "main" ? null : form.branch_id,
           branch_name: branch?.name ?? null,
           is_active: form.is_active,
@@ -166,6 +214,70 @@ const Users = () => {
       toast({ title: "User removed", description: `@${user.username} can no longer sign in.` });
     } catch {
       toast({ title: "Could not remove user", variant: "destructive" });
+    }
+  };
+
+  const openCreateRole = () => {
+    setEditingRole(null);
+    setRoleForm(emptyRoleForm);
+    setRoleError("");
+    setRoleDialogOpen(true);
+  };
+
+  const openEditRole = (role: CustomRole) => {
+    setEditingRole(role);
+    setRoleForm({ name: role.name, permissions: role.permissions });
+    setRoleError("");
+    setRoleDialogOpen(true);
+  };
+
+  const togglePermission = (code: string, checked: boolean) => {
+    setRoleForm((prev) => ({
+      ...prev,
+      permissions: checked ? [...prev.permissions, code] : prev.permissions.filter((c) => c !== code),
+    }));
+  };
+
+  const handleSaveRole = async () => {
+    if (!restaurantId) return;
+    setRoleError("");
+    if (!roleForm.name.trim()) return setRoleError("Role name is required.");
+    if (roleForm.permissions.length === 0) return setRoleError("Select at least one permission.");
+
+    setSavingRole(true);
+    try {
+      const saved = await saveCustomRole(restaurantId, {
+        id: editingRole?.id,
+        name: roleForm.name,
+        permissions: roleForm.permissions,
+      });
+      setForm((f) => ({ ...f, role: saved.id }));
+      toast({
+        title: editingRole ? "Role updated" : "Role created",
+        description: `"${saved.name}" is ready to assign.`,
+      });
+      setRoleDialogOpen(false);
+    } catch (err) {
+      setRoleError(err instanceof Error ? err.message : "Could not save the role.");
+    } finally {
+      setSavingRole(false);
+    }
+  };
+
+  const handleDeleteRole = async (role: CustomRole) => {
+    if (!restaurantId) return;
+    const inUse = staff.filter((s) => s.role === role.id);
+    const warning =
+      inUse.length > 0
+        ? `${inUse.length} staff member${inUse.length === 1 ? "" : "s"} currently ${inUse.length === 1 ? "has" : "have"} the "${role.name}" role and will lose those permissions immediately. `
+        : "";
+    if (!window.confirm(`${warning}Delete the "${role.name}" role?`)) return;
+    try {
+      await deleteCustomRole(restaurantId, role.id);
+      if (form.role === role.id) setForm((f) => ({ ...f, role: "cashier" }));
+      toast({ title: "Role deleted" });
+    } catch {
+      toast({ title: "Could not delete role", variant: "destructive" });
     }
   };
 
@@ -240,7 +352,7 @@ const Users = () => {
                     <p className="font-medium text-foreground">{user.full_name}</p>
                     <p className="font-mono text-xs text-muted-foreground">@{user.username}</p>
                   </td>
-                  <td className="px-4 py-3">{restaurantRoleLabel(user.role)}</td>
+                  <td className="px-4 py-3">{roleLabelFor(user.role)}</td>
                   <td className="px-4 py-3">
                     <span className="inline-flex items-center gap-1.5 text-muted-foreground">
                       <Building2 className="h-3.5 w-3.5" />
@@ -332,13 +444,71 @@ const Users = () => {
 
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="space-y-2">
-                <Label>Role</Label>
-                <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v })}>
+                <div className="flex items-center justify-between">
+                  <Label>Role</Label>
+                  {isCustomRoleId(form.role) && (
+                    <div className="flex gap-1">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6"
+                        title="Edit this custom role"
+                        onClick={() => {
+                          const role = customRoles.find((r) => r.id === form.role);
+                          if (role) openEditRole(role);
+                        }}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6 text-destructive hover:text-destructive"
+                        title="Delete this custom role"
+                        onClick={() => {
+                          const role = customRoles.find((r) => r.id === form.role);
+                          if (role) void handleDeleteRole(role);
+                        }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+                <Select
+                  value={form.role}
+                  onValueChange={(v) => {
+                    if (v === CREATE_CUSTOM_ROLE_VALUE) {
+                      openCreateRole();
+                      return;
+                    }
+                    setForm({ ...form, role: v });
+                  }}
+                >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {STAFF_ROLES.map((role) => (
-                      <SelectItem key={role} value={role}>{restaurantRoleLabel(role)}</SelectItem>
-                    ))}
+                    <SelectGroup>
+                      <SelectLabel>Built-in roles</SelectLabel>
+                      {STAFF_ROLES.map((role) => (
+                        <SelectItem key={role} value={role}>{restaurantRoleLabel(role)}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                    {customRoles.length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>Custom roles</SelectLabel>
+                        {customRoles.map((role) => (
+                          <SelectItem key={role.id} value={role.id}>{role.name}</SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )}
+                    <SelectSeparator />
+                    <SelectItem value={CREATE_CUSTOM_ROLE_VALUE}>
+                      <span className="flex items-center gap-1.5 text-primary">
+                        <ShieldPlus className="h-3.5 w-3.5" /> Create custom role…
+                      </span>
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -360,7 +530,7 @@ const Users = () => {
                 <KeyRound className="h-3.5 w-3.5" /> Access granted by this role
               </p>
               <div className="flex flex-wrap gap-1.5">
-                {staffPermissionsForRole(form.role as StaffUser["role"]).map((code) => (
+                {previewPermissionsFor(form.role).map((code) => (
                   <span key={code} className="rounded-md bg-background px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
                     {code}
                   </span>
@@ -386,6 +556,93 @@ const Users = () => {
             <Button onClick={() => void handleSave()} disabled={saving}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {editing ? "Save changes" : "Create user"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Custom Role Builder */}
+      <Dialog open={roleDialogOpen} onOpenChange={setRoleDialogOpen}>
+        <DialogContent className="grid max-h-[calc(100dvh-1rem)] w-[calc(100%-1rem)] max-w-xl grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-h-[calc(100dvh-2rem)]">
+          <DialogHeader className="border-b border-border/60 px-5 py-4 pr-12 sm:px-6">
+            <DialogTitle>{editingRole ? `Edit "${editingRole.name}"` : "Create custom role"}</DialogTitle>
+            <DialogDescription>
+              Pick exactly the permissions this role should grant. Like every staff role, it can never
+              include system settings, profile, or payment configuration access.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid min-h-0 gap-4 overflow-y-auto px-5 py-4 sm:px-6">
+            <div className="space-y-2">
+              <Label htmlFor="role_name">Role name</Label>
+              <Input
+                id="role_name"
+                value={roleForm.name}
+                placeholder="Shift Lead"
+                onChange={(e) => setRoleForm({ ...roleForm, name: e.target.value })}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <Label>Permissions</Label>
+              <div className="flex gap-3 text-xs">
+                <button
+                  type="button"
+                  className="text-primary hover:underline"
+                  onClick={() => setRoleForm((f) => ({ ...f, permissions: ASSIGNABLE_PERMISSIONS.map((p) => p.code) }))}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:underline"
+                  onClick={() => setRoleForm((f) => ({ ...f, permissions: [] }))}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {PERMISSION_MODULES.map((mod) => (
+                <div key={mod}>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {mod}
+                  </p>
+                  <div className="space-y-1.5">
+                    {ASSIGNABLE_PERMISSIONS.filter((p) => p.module === mod).map((perm) => (
+                      <label
+                        key={perm.code}
+                        className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/50 p-2 text-sm hover:bg-muted/30"
+                      >
+                        <Checkbox
+                          className="mt-0.5"
+                          checked={roleForm.permissions.includes(perm.code)}
+                          onCheckedChange={(checked) => togglePermission(perm.code, checked === true)}
+                        />
+                        <span>
+                          <span className="block font-medium">{perm.description}</span>
+                          <span className="block font-mono text-[10px] text-muted-foreground">{perm.code}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {roleError && (
+              <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{roleError}</p>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2 border-t border-border/60 bg-background px-5 py-4 sm:px-6">
+            <Button variant="outline" onClick={() => setRoleDialogOpen(false)} disabled={savingRole}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleSaveRole()} disabled={savingRole}>
+              {savingRole && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {editingRole ? "Save role" : "Create role"}
             </Button>
           </DialogFooter>
         </DialogContent>

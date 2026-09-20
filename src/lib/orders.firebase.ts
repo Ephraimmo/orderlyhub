@@ -86,6 +86,8 @@ export interface FirebaseOrder {
   delivery_address?: DeliveryAddress | null;
   restaurant_id: string;
   restaurant_name: string;
+  branch_id?: string | null;
+  branch_name?: string | null;
   customer_name: string;
 
   driver_id?: string | null;
@@ -261,6 +263,64 @@ export const ORDER_STAGE_COLOR: Record<OrderStage, string> = {
   cancelled: "bg-destructive/10 text-destructive",
   refunded: "bg-destructive/10 text-destructive",
 };
+
+/** True while a delivery order can be (re)assigned to a driver — i.e. no driver has
+ * accepted yet. Once accepted (`status: "assigned"`), driver_id must not be
+ * overwritten through this path (see orders.firebase.ts §5.3 of the handover doc). */
+export function isAssignableToDriver(o: { status: OrderStatus | string; order_type?: OrderType | string | null }): boolean {
+  if (!isDeliveryOrder(o)) return false;
+  const raw = normalizeStatus(String(o.status)) as string;
+  return raw === "ready" || raw === "offered";
+}
+
+/**
+ * Assign (or reassign) a driver to a delivery order. Only valid while the order is
+ * still "ready" (nobody has accepted it yet) — `status` is intentionally NOT part
+ * of this patch, it stays "ready" until the driver's own app accepts the job by
+ * writing `status: "assigned"`. Never set `status` to "assigned" from here.
+ */
+export async function assignOrderDriver(input: {
+  orderId: string;
+  driverId: string;
+  driverName: string;
+  driverPhone?: string | null;
+  driverPhoto?: string | null;
+  driverRating?: number | null;
+  etaMinutes?: number | null;
+  actor?: string | null;
+}): Promise<void> {
+  if (!isFirebaseAvailable()) throw new Error("Firebase unavailable");
+  const order = await fsGet<FirebaseOrder>(orderPath(input.orderId));
+  if (!order) throw new Error("Order not found");
+  if (!isAssignableToDriver(order)) {
+    throw new Error(
+      isDeliveryOrder(order)
+        ? `Cannot assign a driver while the order is "${order.status}" — the driver app must accept before reassignment`
+        : "Only delivery orders can be assigned to a driver",
+    );
+  }
+
+  const wasAssigned = Boolean(order.driver_id);
+  const ts = now();
+  const eta = input.etaMinutes ?? order.eta_minutes ?? 30;
+  const patch: Partial<FirebaseOrder> = {
+    driver_id: input.driverId,
+    driver_name: input.driverName,
+    driver_phone: input.driverPhone ?? null,
+    driver_photo: input.driverPhoto ?? null,
+    driver_rating: input.driverRating ?? null,
+    eta_minutes: eta,
+    eta_at: new Date(Date.now() + eta * 60_000).toISOString(),
+    updated_at: ts,
+  };
+
+  await fsSet(orderPath(input.orderId), w({ ...order, ...patch }));
+  await appendTimeline(input.orderId, {
+    status: "note",
+    note: `Driver ${wasAssigned ? "reassigned" : "assigned"}: ${input.driverName}`,
+    actor: input.actor ?? null,
+  });
+}
 
 /** Pickup at counter: ready → collected → completed (delivered). */
 export async function completePickupCollection(input: {
