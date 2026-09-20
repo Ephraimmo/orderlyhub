@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { db } from "@/lib/firestore";
 import { ref, onValue } from "@/lib/firestore";
 import { useAuth } from "@/contexts/AuthContext";
+import { subscribeBranches, type RestaurantBranch } from "@/lib/branches.firebase";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -16,6 +17,7 @@ interface AssignedDriver {
   vehiclePlate: string;
   active: boolean;
   status: string;
+  branches: string[]; // resolved branch names; empty = assigned restaurant-wide
 }
 
 const Drivers = () => {
@@ -29,20 +31,42 @@ const Drivers = () => {
     if (!restaurantId) return;
     let assignments: Record<string, any> = {};
     let driverProfiles: Record<string, any> = {};
+    let branchList: RestaurantBranch[] = [];
 
+    // A driver can hold a separate driverAssignments record per branch, so the
+    // same driver_id may appear multiple times in the raw collection — group by
+    // driver_id here so each driver renders as exactly one row.
     const merge = () => {
-      const list = Object.values(assignments)
-        .filter((a) => a.restaurant_id === restaurantId && a.is_active !== false)
-        .map((a) => {
-          const profile = driverProfiles[a.driver_id] ?? {};
+      const branchNameById = new Map(branchList.map((b) => [b.id, b.name]));
+      const grouped = new Map<string, { branchIds: Set<string>; restaurantWide: boolean; active: boolean }>();
+
+      for (const a of Object.values(assignments) as any[]) {
+        const driverId = a?.driver_id;
+        if (!driverId || a.restaurant_id !== restaurantId) continue;
+        const entry = grouped.get(driverId) ?? { branchIds: new Set<string>(), restaurantWide: false, active: false };
+        if (a.is_active !== false) {
+          entry.active = true;
+          if (a.branch_id) entry.branchIds.add(a.branch_id);
+          else entry.restaurantWide = true;
+        }
+        grouped.set(driverId, entry);
+      }
+
+      const list = Array.from(grouped.entries())
+        .filter(([, info]) => info.active)
+        .map(([driverId, info]) => {
+          const profile = driverProfiles[driverId] ?? {};
           return {
-            id: a.driver_id,
-            name: profile.full_name ?? profile.name ?? a.driver_id,
+            id: driverId,
+            name: profile.full_name ?? profile.name ?? driverId,
             phone: profile.phone ?? "",
             vehicleType: profile.vehicle_type ?? "—",
             vehiclePlate: profile.vehicle_plate ?? "—",
-            active: profile.is_active !== false && a.is_active !== false,
+            active: profile.is_active !== false,
             status: String(profile.status ?? "offline"),
+            branches: info.restaurantWide
+              ? []
+              : Array.from(info.branchIds).map((id) => branchNameById.get(id) ?? id),
           } satisfies AssignedDriver;
         });
       setDrivers(list);
@@ -57,7 +81,11 @@ const Drivers = () => {
       driverProfiles = snap.exists() ? snap.val() : {};
       merge();
     });
-    return () => { unsub1(); unsub2(); };
+    const unsub3 = subscribeBranches(restaurantId, (rows) => {
+      branchList = rows;
+      merge();
+    });
+    return () => { unsub1(); unsub2(); unsub3(); };
   }, [restaurantId]);
 
   const filtered = drivers
@@ -69,7 +97,7 @@ const Drivers = () => {
       <div>
         <h1 className="text-2xl font-bold">Drivers</h1>
         <p className="text-sm text-muted-foreground">
-          Drivers assigned to your restaurant via ForkFleet Super Admin ({drivers.length} assignments)
+          Drivers assigned to your restaurant via ForkFleet Super Admin ({drivers.length} driver{drivers.length === 1 ? "" : "s"})
         </p>
       </div>
 
@@ -88,7 +116,7 @@ const Drivers = () => {
         </Select>
       </div>
 
-      {loading ? <TableSkeleton columns={6} /> : (
+      {loading ? <TableSkeleton columns={7} /> : (
       <div className="glass-card overflow-hidden">
         <Table>
           <TableHeader>
@@ -98,12 +126,13 @@ const Drivers = () => {
               <TableHead>Vehicle</TableHead>
               <TableHead>Plate</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Branches</TableHead>
               <TableHead>Assignment</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
-              <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No drivers assigned to this restaurant</TableCell></TableRow>
+              <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No drivers assigned to this restaurant</TableCell></TableRow>
             ) : filtered.map((d) => (
               <TableRow key={d.id}>
                 <TableCell className="font-medium">{d.name}</TableCell>
@@ -111,6 +140,7 @@ const Drivers = () => {
                 <TableCell className="capitalize">{d.vehicleType}</TableCell>
                 <TableCell>{d.vehiclePlate}</TableCell>
                 <TableCell className="capitalize">{d.status}</TableCell>
+                <TableCell>{d.branches.length > 0 ? d.branches.join(", ") : "All branches"}</TableCell>
                 <TableCell>{d.active ? "Active" : "Inactive"}</TableCell>
               </TableRow>
             ))}
