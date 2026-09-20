@@ -39,13 +39,17 @@ import {
   orderLineTotal,
   orderNumber,
   orderPaymentMethod,
+  orderPaymentProofUrl,
   orderPaymentReference,
   orderPaymentStatus,
   orderPlacedAt,
   orderReceiptNumber,
   orderSpecialInstructions,
+  paymentRequiresVerification,
+  isPaymentVerified,
   type DisplayOrderLine,
 } from "@/lib/order-display";
+import { Link } from "react-router-dom";
 import { MenuCatalog } from "@/lib/menu-catalog";
 import { OrderDetailLine } from "@/components/OrderDetailLine";
 import { OrderTypeBadge } from "@/components/OrderTypeBadge";
@@ -57,7 +61,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Eye, Search, Filter, MapPin, CreditCard, Banknote, Receipt, Truck, Clock, User, Phone, FileText, UtensilsCrossed, ShoppingBag } from "lucide-react";
+import { Eye, Search, Filter, MapPin, CreditCard, Banknote, Receipt, Truck, Clock, User, Phone, FileText, UtensilsCrossed, ShoppingBag, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import TableSkeleton from "@/components/TableSkeleton";
 
@@ -72,6 +76,7 @@ const Orders = () => {
   const canKitchenManage = canManage("kitchen");
   // Independent of rm.orders.manage — a restaurant may grant one without the other.
   const canAssignDriver = can("rm.orders.assign");
+  const canViewPayments = can("rm.payments.view");
   const [orders, setOrders] = useState<any[]>([]);
   const [driverAssignments, setDriverAssignments] = useState<Record<string, DriverAssignmentRecord>>({});
   const [driverProfiles, setDriverProfiles] = useState<Record<string, DriverProfileRecord>>({});
@@ -175,12 +180,16 @@ const Orders = () => {
   const [rejecting, setRejecting] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const acceptOrder = async (orderId: string) => {
+  const acceptOrder = async (order: any) => {
     if (readOnly) return;
-    setBusyId(orderId);
+    if (paymentRequiresVerification(order) && !isPaymentVerified(order)) {
+      toast.error("Verify the proof of payment in Payments before accepting this order");
+      return;
+    }
+    setBusyId(order.id);
     try {
       await setFirebaseOrderStatus({
-        orderId,
+        orderId: order.id,
         status: "accepted",
         actor: session?.email ?? null,
       });
@@ -361,6 +370,8 @@ const Orders = () => {
             <SelectItem value="all">All Payments</SelectItem>
             <SelectItem value="cash">Cash</SelectItem>
             <SelectItem value="card">Card</SelectItem>
+            <SelectItem value="eft">EFT</SelectItem>
+            <SelectItem value="wallet">Wallet</SelectItem>
           </SelectContent>
         </Select>
         <Input type="date" className="w-40" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} />
@@ -386,6 +397,7 @@ const Orders = () => {
             ) : filtered.map((o) => {
               const stage = orderStage(o);
               const busy = busyId === o.id;
+              const paymentBlocked = paymentRequiresVerification(o) && !isPaymentVerified(o);
               const eligibleDrivers =
                 canAssignDriver && (stage === "unassigned" || stage === "waiting_accept")
                   ? eligibleDriversForOrder(driverAssignments, driverProfiles, restaurantId ?? "", o.branch_id ?? null)
@@ -412,9 +424,25 @@ const Orders = () => {
                     <Button variant="ghost" size="sm" onClick={() => setSelectedOrder(o)}>
                       <Eye className="h-3 w-3 mr-1" />View
                     </Button>
-                    {stage === "pending" && !readOnly && (
+                    {stage === "pending" && !readOnly && paymentBlocked && (
                       <>
-                        <Button size="sm" variant="default" disabled={busy} onClick={() => acceptOrder(o.id)}>Accept</Button>
+                        {canViewPayments ? (
+                          <Button size="sm" variant="outline" className="text-warning" asChild>
+                            <Link to="/payments">
+                              <ShieldAlert className="h-3 w-3 mr-1" />Verify payment
+                            </Link>
+                          </Button>
+                        ) : (
+                          <span className="text-[10px] text-warning px-2 py-1 rounded-md bg-warning/10 flex items-center gap-1">
+                            <ShieldAlert className="h-3 w-3" />Awaiting payment verification
+                          </span>
+                        )}
+                        <Button size="sm" variant="outline" className="text-destructive" disabled={busy} onClick={() => openReject(o.id)}>Reject</Button>
+                      </>
+                    )}
+                    {stage === "pending" && !readOnly && !paymentBlocked && (
+                      <>
+                        <Button size="sm" variant="default" disabled={busy} onClick={() => acceptOrder(o)}>Accept</Button>
                         <Button size="sm" variant="outline" className="text-destructive" disabled={busy} onClick={() => openReject(o.id)}>Reject</Button>
                       </>
                     )}
@@ -559,6 +587,25 @@ const Orders = () => {
                     <p className="text-sm leading-relaxed">{selectedOrder.rejection_reason}</p>
                   </div>
                 )}
+                {selectedOrder.status === "pending" &&
+                  paymentRequiresVerification(selectedOrder) &&
+                  !isPaymentVerified(selectedOrder) && (
+                    <div className="rounded-xl border border-warning/25 bg-warning/10 p-4">
+                      <p className="text-xs font-medium text-warning mb-1 flex items-center gap-1.5">
+                        <ShieldAlert className="h-3.5 w-3.5" /> Payment not yet verified
+                      </p>
+                      <p className="text-sm leading-relaxed text-muted-foreground">
+                        This order was paid by {orderPaymentMethod(selectedOrder)}, which requires proof of
+                        payment review. It cannot be accepted until approved in{" "}
+                        {canViewPayments ? (
+                          <Link to="/payments" className="text-primary underline">Payments</Link>
+                        ) : (
+                          "Payments"
+                        )}
+                        .
+                      </p>
+                    </div>
+                  )}
               </TabsContent>
 
               {/* ITEMS TAB */}
@@ -693,13 +740,27 @@ const Orders = () => {
                     </div>
                   )}
 
-                  {selectedOrder.paymentProofUrl && (
+                  {paymentRequiresVerification(selectedOrder) && (
+                    <div className="mt-4 rounded-lg border border-warning/20 bg-warning/5 p-3 space-y-1">
+                      <p className="text-xs font-medium text-warning flex items-center gap-1">
+                        <ShieldAlert className="h-3 w-3" /> Requires proof of payment review
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Verification status:{" "}
+                        <span className="font-medium capitalize">
+                          {isPaymentVerified(selectedOrder) ? "Approved" : orderPaymentStatus(selectedOrder)}
+                        </span>
+                      </p>
+                    </div>
+                  )}
+
+                  {orderPaymentProofUrl(selectedOrder) && (
                     <div className="mt-4 rounded-lg border border-border bg-muted/30 p-3">
                       <p className="text-xs font-medium flex items-center gap-1 mb-2">
                         <Receipt className="h-3 w-3" /> Proof of payment
                       </p>
                       <img
-                        src={selectedOrder.paymentProofUrl}
+                        src={orderPaymentProofUrl(selectedOrder)}
                         alt="Payment receipt"
                         className="rounded-lg border border-border max-h-60 w-full object-contain bg-background"
                       />

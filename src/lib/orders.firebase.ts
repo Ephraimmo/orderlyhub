@@ -105,6 +105,12 @@ export interface FirebaseOrder {
   rejected_by?: string | null;
   rejected_at?: string | null;
 
+  payment_method?: string | null;
+  payment_status?: "pending" | "paid" | "failed" | "refunded" | string | null;
+  payment_reviewed_at?: string | null;
+  payment_reviewed_by?: string | null;
+  paymentProofUrl?: string | null;
+
   updated_at?: string;
   [key: string]: unknown;
 }
@@ -507,6 +513,38 @@ export async function rejectFirebaseOrder(input: {
   await appendTimeline(input.orderId, {
     status: "rejected",
     note: reason,
+    actor: input.actor ?? null,
+  });
+}
+
+/**
+ * Approve or reject a customer's uploaded proof of payment (Payments module).
+ * This only records the restaurant's payment decision — it never changes the
+ * order's own `status`. Orders paid by a method that requires manual proof
+ * (see order-display.ts's paymentRequiresVerification) cannot be accepted
+ * until this resolves to "paid".
+ */
+export async function reviewOrderPayment(input: {
+  orderId: string;
+  decision: "paid" | "failed";
+  actor?: string | null;
+}): Promise<void> {
+  if (!isFirebaseAvailable()) throw new Error("Firebase unavailable");
+  const order = await fsGet<FirebaseOrder>(orderPath(input.orderId));
+  if (!order) throw new Error("Order not found");
+
+  const ts = now();
+  const patch: Partial<FirebaseOrder> = {
+    payment_status: input.decision,
+    payment_reviewed_at: ts,
+    payment_reviewed_by: input.actor ?? null,
+    updated_at: ts,
+  };
+
+  await fsSet(orderPath(input.orderId), w({ ...order, ...patch }));
+  await appendTimeline(input.orderId, {
+    status: "note",
+    note: input.decision === "paid" ? "Proof of payment approved" : "Proof of payment rejected",
     actor: input.actor ?? null,
   });
 }

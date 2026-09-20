@@ -101,6 +101,23 @@ export function orderPaymentStatus(order: Record<string, unknown>): string {
   return firstString(order.payment_status, order.paymentStatus, payment?.status) || "pending";
 }
 
+/** Payment methods a gateway or cash-on-hand settles instantly — never require a
+ * manually-uploaded proof of payment. Anything else (e.g. EFT/bank transfer)
+ * defaults to requiring verification, so an unrecognized method fails closed. */
+const INSTANT_PAYMENT_METHODS = new Set(["cash", "card", "wallet", "apple_pay", "google_pay"]);
+
+/** True when this order's payment method requires the restaurant to manually
+ * review an uploaded proof of payment (Payments module) before it can be trusted. */
+export function paymentRequiresVerification(order: Record<string, unknown>): boolean {
+  const method = orderPaymentMethod(order);
+  return method !== "—" && !INSTANT_PAYMENT_METHODS.has(method);
+}
+
+/** True once the restaurant has approved the order's proof of payment. */
+export function isPaymentVerified(order: Record<string, unknown>): boolean {
+  return orderPaymentStatus(order) === "paid";
+}
+
 export function orderDriverName(order: Record<string, unknown>): string {
   return firstString(order.driver_name, order.driverName);
 }
@@ -162,6 +179,11 @@ export function orderPaymentReference(order: Record<string, unknown>): string {
 export function orderReceiptNumber(order: Record<string, unknown>): string {
   const payment = asRecord(order.payment);
   return firstString(order.receipt_number, payment?.receipt_number);
+}
+
+export function orderPaymentProofUrl(order: Record<string, unknown>): string {
+  const payment = asRecord(order.payment);
+  return firstString(order.paymentProofUrl, order.payment_proof_url, payment?.proof_url);
 }
 
 export function orderEtaAt(order: Record<string, unknown>): Date | null {
