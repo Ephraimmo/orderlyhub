@@ -151,7 +151,7 @@ export async function signInRestaurantUserWithFirebase(input: {
         ok: false,
         error: "not_provisioned",
         message:
-          "This account has no Restaurant Management access. Ask a platform administrator to provision it.",
+          "This account has no Hearth Kitchen access. Ask a platform administrator to provision it.",
       };
     }
     if (record.status === "suspended") {

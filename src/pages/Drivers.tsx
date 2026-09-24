@@ -97,7 +97,7 @@ const Drivers = () => {
       <div>
         <h1 className="text-2xl font-bold">Drivers</h1>
         <p className="text-sm text-muted-foreground">
-          Drivers assigned to your restaurant via ForkFleet Super Admin ({drivers.length} driver{drivers.length === 1 ? "" : "s"})
+          Drivers assigned to your restaurant via Hearth Admin ({drivers.length} driver{drivers.length === 1 ? "" : "s"})
         </p>
       </div>
 
@@ -151,7 +151,7 @@ const Drivers = () => {
 
       <p className="text-xs text-muted-foreground flex items-center gap-2">
         <Truck className="h-3.5 w-3.5" />
-        Driver profiles are managed by the Driver App. Assignments are controlled in ForkFleet Super Admin.
+        Driver profiles are managed by the Driver App. Assignments are controlled in Hearth Admin.
       </p>
     </div>
   );

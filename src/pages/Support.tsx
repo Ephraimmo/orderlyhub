@@ -299,7 +299,7 @@ const Support = () => {
                 </div>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Priority and assignment are managed by the ForkFleet support console.
+                Priority and assignment are managed by the Hearth support team.
               </p>
 
               <ScrollArea className="flex-1 min-h-0 max-h-[38vh] pr-3">

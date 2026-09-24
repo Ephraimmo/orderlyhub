@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { UtensilsCrossed, Loader2, ShieldCheck, TimerReset, HandPlatter, UserRound } from "lucide-react";
+import { Loader2, ShieldCheck, TimerReset, HandPlatter, UserRound } from "lucide-react";
+import { CONSOLE_NAME, HearthBadge, HearthLogo } from "@/components/HearthLogo";
 
 const Login = () => {
   const { session, loading, login, loginStaff } = useAuth();
@@ -15,6 +16,10 @@ const Login = () => {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    document.title = `Sign in — ${CONSOLE_NAME}`;
+  }, []);
 
   if (loading) {
     return (
@@ -53,11 +58,12 @@ const Login = () => {
       <div className="relative mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-6xl overflow-hidden rounded-3xl border border-border/60 bg-card/70 shadow-2xl backdrop-blur-xl animate-fade-in">
         <section className="hidden w-1/2 flex-col justify-between border-r border-border/60 p-10 lg:flex">
           <div>
+            <HearthLogo subtitle="Kitchen" className="mb-8" />
             <h1 className="max-w-sm text-2xl font-bold leading-tight text-foreground">
               Operate your assigned restaurant with confidence.
             </h1>
             <p className="mt-4 max-w-md text-sm text-muted-foreground">
-              Sign in with credentials provisioned by ForkFleet Super Admin. Your restaurant is assigned automatically — no manual selection.
+              Sign in with credentials provisioned by Hearth Admin. Your restaurant is assigned automatically — no manual selection.
             </p>
           </div>
 
@@ -88,10 +94,8 @@ const Login = () => {
         <section className="flex w-full items-center justify-center p-6 sm:p-10 lg:w-1/2">
           <div className="w-full max-w-md">
             <div className="mb-8 flex flex-col items-center lg:items-start">
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/20 bg-primary/10">
-                <UtensilsCrossed className="h-7 w-7 text-primary" />
-              </div>
-              <h1 className="text-2xl font-bold text-foreground">Restaurant Management</h1>
+              <HearthBadge className="mb-4 h-14 w-14" />
+              <h1 className="text-2xl font-bold text-foreground">{CONSOLE_NAME}</h1>
               <p className="mt-1 text-sm text-muted-foreground">
                 {staffMode ? "Sign in with the username your admin gave you" : "Sign in with your provisioned account"}
               </p>
@@ -173,7 +177,7 @@ const Login = () => {
             </form>
 
             <p className="mt-4 text-center text-xs text-muted-foreground lg:text-left">
-              Access is controlled by ForkFleet Super Admin. Contact your administrator if you need an account.
+              Access is controlled by Hearth Admin. Contact your administrator if you need an account.
             </p>
           </div>
         </section>

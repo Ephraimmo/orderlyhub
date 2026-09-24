@@ -1,7 +1,19 @@
-import { Outlet } from "react-router-dom";
+import { useEffect } from "react";
+import { Outlet, useLocation } from "react-router-dom";
 import AdminSidebar from "@/components/AdminSidebar";
+import { CONSOLE_NAME } from "@/components/HearthLogo";
+import { navItems } from "@/components/nav-items";
+
+const usePageTitle = () => {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    const item = navItems.find(({ to }) => (to === "/" ? pathname === "/" : pathname.startsWith(to)));
+    document.title = item ? `${item.label} — ${CONSOLE_NAME}` : CONSOLE_NAME;
+  }, [pathname]);
+};
 
 const AdminLayout = () => {
+  usePageTitle();
   return (
     <div className="relative min-h-screen bg-background">
       <div className="pointer-events-none absolute inset-0">

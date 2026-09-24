@@ -1,0 +1,14 @@
+{
+  "name": "Hearth Kitchen",
+  "short_name": "Hearth Kitchen",
+  "description": "Run your Hearth restaurant — orders, kitchen, menu and staff.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fcfaf7",
+  "theme_color": "#fb4500",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/logo-mark.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "monochrome" }
+  ]
+}
