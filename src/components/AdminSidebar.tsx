@@ -1,7 +1,7 @@
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { LogOut, UtensilsCrossed } from "lucide-react";
-import { HearthLogo } from "@/components/HearthLogo";
+import { AppLogo, CONSOLE_NAME } from "@/components/HearthLogo";
 import { navItems } from "@/components/nav-items";
 
 const AdminSidebar = () => {
@@ -13,10 +13,10 @@ const AdminSidebar = () => {
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-64 flex-col border-r border-sidebar-border/80 bg-sidebar/95 backdrop-blur-xl">
       <Link
         to="/"
-        aria-label="Hearth Kitchen — home"
+        aria-label={`${CONSOLE_NAME} — home`}
         className="flex h-14 shrink-0 items-center border-b border-sidebar-border px-6"
       >
-        <HearthLogo subtitle="Kitchen" />
+        <AppLogo />
       </Link>
       <div className="border-b border-sidebar-border px-6 py-5">
         <div className="flex items-center gap-3">

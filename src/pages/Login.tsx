@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Loader2, ShieldCheck, TimerReset, HandPlatter, UserRound } from "lucide-react";
-import { CONSOLE_NAME, HearthBadge, HearthLogo } from "@/components/HearthLogo";
+import { AppLogo, CONSOLE_NAME, HearthBadge } from "@/components/HearthLogo";
 
 const Login = () => {
   const { session, loading, login, loginStaff } = useAuth();
@@ -58,12 +58,12 @@ const Login = () => {
       <div className="relative mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-6xl overflow-hidden rounded-3xl border border-border/60 bg-card/70 shadow-2xl backdrop-blur-xl animate-fade-in">
         <section className="hidden w-1/2 flex-col justify-between border-r border-border/60 p-10 lg:flex">
           <div>
-            <HearthLogo subtitle="Kitchen" className="mb-8" />
+            <AppLogo className="mb-8" />
             <h1 className="max-w-sm text-2xl font-bold leading-tight text-foreground">
               Operate your assigned restaurant with confidence.
             </h1>
             <p className="mt-4 max-w-md text-sm text-muted-foreground">
-              Sign in with credentials provisioned by Hearth Admin. Your restaurant is assigned automatically — no manual selection.
+              Sign in with credentials provisioned by Super Admin. Your restaurant is assigned automatically — no manual selection.
             </p>
           </div>
 
@@ -177,7 +177,7 @@ const Login = () => {
             </form>
 
             <p className="mt-4 text-center text-xs text-muted-foreground lg:text-left">
-              Access is controlled by Hearth Admin. Contact your administrator if you need an account.
+              Access is controlled by Super Admin. Contact your administrator if you need an account.
             </p>
           </div>
         </section>

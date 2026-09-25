@@ -7,7 +7,8 @@ import { cn } from "@/lib/utils";
 export const HEARTH_FLAME_PATH =
   "M16 4C20.5 10 25 13.5 25 19A9 9 0 0 1 7 19C7 13.5 11.5 10 16 4ZM16 13C18 16 20 17.8 20 20.5A4 4 0 0 1 12 20.5C12 17.8 14 16 16 13Z";
 
-export const CONSOLE_NAME = "Hearth Kitchen";
+/** This app's name. It keeps the shared Hearth flame and colours under its own name. */
+export const CONSOLE_NAME = "Kasi Zonke Link";
 
 type MarkProps = { className?: string };
 
@@ -28,20 +29,10 @@ export const HearthBadge = ({ className }: MarkProps) => (
   </svg>
 );
 
-/** Mark + wordmark. The wordmark stays real text so it is selectable and read correctly. */
-export const HearthLogo = ({
-  className,
-  subtitle,
-}: {
-  className?: string;
-  /** Optional console sub-name, e.g. "Kitchen". */
-  subtitle?: string;
-}) => (
+/** Mark + app name. The name stays real text so it is selectable and read correctly. */
+export const AppLogo = ({ className }: { className?: string }) => (
   <span className={cn("inline-flex items-center gap-2", className)}>
     <HearthMark className="h-7 w-7 shrink-0 text-primary" />
-    <span className="text-lg font-black leading-none tracking-[-0.02em] text-foreground">
-      Hearth
-      {subtitle ? <span className="ml-1.5 font-semibold text-muted-foreground">{subtitle}</span> : null}
-    </span>
+    <span className="text-lg font-black leading-none tracking-[-0.02em] text-foreground">{CONSOLE_NAME}</span>
   </span>
 );

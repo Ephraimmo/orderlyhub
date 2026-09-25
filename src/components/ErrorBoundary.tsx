@@ -1,9 +1,9 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { CONSOLE_NAME, HearthLogo } from "@/components/HearthLogo";
+import { AppLogo, CONSOLE_NAME } from "@/components/HearthLogo";
 
 type State = { error: Error | null };
 
-/** Top-level client error screen, so a render crash still shows the Hearth brand instead of a blank page. */
+/** Top-level client error screen, so a render crash still shows the app's name and mark instead of a blank page. */
 class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   state: State = { error: null };
 
@@ -21,10 +21,10 @@ class ErrorBoundary extends Component<{ children: ReactNode }, State> {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background px-4">
         <div className="flex max-w-md flex-col items-center text-center">
-          <HearthLogo subtitle="Kitchen" className="mb-8" />
+          <AppLogo className="mb-8" />
           <h1 className="mb-2 text-2xl font-bold">Something went wrong</h1>
           <p className="mb-6 text-sm text-muted-foreground">
-            This screen hit an unexpected error. Reload to try again — if it keeps happening, contact Hearth support.
+            This screen hit an unexpected error. Reload to try again — if it keeps happening, contact your platform administrator.
           </p>
           <button
             type="button"

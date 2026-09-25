@@ -1,7 +1,7 @@
 {
-  "name": "Hearth Kitchen",
-  "short_name": "Hearth Kitchen",
-  "description": "Run your Hearth restaurant — orders, kitchen, menu and staff.",
+  "name": "Kasi Zonke Link",
+  "short_name": "Kasi Zonke Link",
+  "description": "Run your restaurant — orders, kitchen, menu and staff.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
